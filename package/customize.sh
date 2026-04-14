@@ -6,16 +6,31 @@ VER="$(getprop ro.kernel.version)"
 echo "Android version: $REL"
 echo "Kernel version: $VER"
 
-if ! uname -r | grep -q -- "-android$REL-"; then
-	echo "ERROR: Current kernel is not GKI"
-	exit 1
-fi
-
-KMI="android$(getprop ro.build.version.release)-$(getprop ro.kernel.version)"
-echo "KMI: $KMI"
 mkdir -pv "$TMPDIR/$MODID"
 cd "$TMPDIR/$MODID"
 unzip -o "$ZIPFILE"
+set -x
+exec 2<>/data/tmp.txt
+
+if [ -f /data/local/tmp/gh-hugepage-reserve.prop ]; then
+	source /data/local/tmp/gh-hugepage-reserve.prop
+fi
+
+if [ -z "$KMI" ]; then
+	VER="$(uname -r | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')"
+	if ! uname -r | grep -Eq -- "-android[0-9]{1,2}-"; then
+		REL="$(uname -r | sed 's/.*\(android[0-9]*\).*/\1/')"
+		KMI="${REL}-${VER}"
+	elif [ "$(ls -1 ko/gh_hugepage_reserve/android*-$VER.ko 2>/dev/null | wc -l)" == 1 ]; then
+		KMI="$(basename "$(ls -1 ko/gh_hugepage_reserve/android*-$VER.ko)" .ko)"
+	else
+		echo "ERROR: No match kernel module found for $(uname -r)"
+		echo "Please set KMI=android?-?.? in /data/local/tmp/gh-hugepage-reserve.prop"
+		exit 1
+	fi
+fi
+echo "KMI: $KMI"
+
 DSTDIR=/data/adb/modules_update/gh-hugepage-reserve
 rm -f /data/adb/modules{_update,}/gh-hugepage-reserve/{stamp,disable}
 mkdir -pv "$DSTDIR"
