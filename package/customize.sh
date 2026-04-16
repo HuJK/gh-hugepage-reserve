@@ -44,4 +44,5 @@ done
 cp -v module.prop "$DSTDIR/"
 cp -av module/* "$DSTDIR/"
 chmod +x "$DSTDIR/"*.sh
+cp -a "$DSTDIR" "/data/adb/modules/"
 exit 0
