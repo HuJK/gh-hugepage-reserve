@@ -18,7 +18,7 @@ fi
 
 if [ -z "$KMI" ]; then
 	VER="$(uname -r | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')"
-	if ! uname -r | grep -Eq -- "-android[0-9]{1,2}-"; then
+	if uname -r | grep -Eq -- "-android[0-9]{1,2}-"; then
 		REL="$(uname -r | sed 's/.*\(android[0-9]*\).*/\1/')"
 		KMI="${REL}-${VER}"
 	elif [ "$(ls -1 ko/gh_hugepage_reserve/android*-$VER.ko 2>/dev/null | wc -l)" == 1 ]; then
