@@ -19,6 +19,9 @@ if [ -f "$DIR/crash" ]; then
 	exit 0
 fi
 touch "$DIR/stamp"
+if ! [ -f "$DIR/settings.prop" ]; then
+	echo "pool_target=1024" > "$DIR/settings.prop"
+fi
 source "$DIR/settings.prop"
 dmesg -w &> "$DIR/dmesg.log" &
 insmod "$DIR/gh_hugepage_reserve.ko" pool_target="$pool_target"
