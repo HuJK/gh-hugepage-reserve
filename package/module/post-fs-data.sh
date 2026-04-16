@@ -1,8 +1,12 @@
 #!/system/bin/sh
+set -x
 while [ -z "$(ls -A /data/adb/modules/)" ]; do
-    sleep 1
+	sleep 1
 done
 DIR=/data/adb/modules/gh-hugepage-reserve
+rm -f "$DIR"/{load,dmesg}.log
+exec 1<>"$DIR"/load.log
+exec 2<>"$DIR"/load.log
 if [ -f "$DIR/disable" ]; then
 	exit 0
 fi
@@ -16,5 +20,6 @@ if [ -f "$DIR/crash" ]; then
 fi
 touch "$DIR/stamp"
 source "$DIR/settings.prop"
+dmesg -w &> "$DIR/dmesg.log" &
 insmod "$DIR/gh_hugepage_reserve.ko" pool_target="$pool_target"
 exit 0
