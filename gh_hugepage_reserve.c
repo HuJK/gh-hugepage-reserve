@@ -1307,8 +1307,14 @@ static int __init hugepage_reserve_init(void)
 	/* Resolve the helpers the aggressive acquire path needs (optional feature).
 	 * Both are non-static but not reliably exported across kernels, so resolve
 	 * via kprobe rather than extern-linking - that way a missing/unexported
-	 * symbol only disables acquire instead of failing the whole module load. */
-	p_alloc_contig_pages = resolve_kfunc("alloc_contig_pages");
+	 * symbol only disables acquire instead of failing the whole module load.
+	 * Since 6.10 mem-alloc-profiling renamed the real function to
+	 * alloc_contig_pages_noprof (same signature; the old name is now a macro),
+	 * so try the _noprof variant first - same dance as the __alloc_pages
+	 * kretprobe fallback list. */
+	p_alloc_contig_pages = resolve_kfunc("alloc_contig_pages_noprof");
+	if (!p_alloc_contig_pages)
+		p_alloc_contig_pages = resolve_kfunc("alloc_contig_pages");
 	p_prep_compound_page = resolve_kfunc("prep_compound_page");
 	if (!p_alloc_contig_pages || !p_prep_compound_page)
 		pr_warn("aggressive acquire disabled (alloc_contig_pages=%d prep_compound_page=%d)\n",
