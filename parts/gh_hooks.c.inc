@@ -176,9 +176,11 @@ static bool pool_take_frozen_exchange(struct page *page)
 			ok = true;
 		}
 		/* limbo full: fall through, drain as today */
-	} else if (limbo_add(page)) {
-		/* nothing demotable: the new block itself waits in limbo */
-		rebuild_order9_compound(page);
+	} else if (limbo_add_rebuild_order9(page)) {
+		/* nothing demotable: the new block itself waits in limbo.
+		 * Rebuild must happen INSIDE the publish (limbo_lock): a limbo
+		 * consumer takes only limbo_lock, so an entry published first
+		 * and rebuilt second can be popped and freed still frozen. */
 		page->mapping = NULL;
 		to_limbo = true;
 	}

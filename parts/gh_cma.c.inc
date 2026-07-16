@@ -1391,7 +1391,15 @@ static void cma_boot_build(void)
 	ret = cma_floor_ok(2) ? cma_verify_first_span() : -EAGAIN;
 	if (ret) {
 		cma_capable = false;		/* boot constant: no retry */
-		cma_pb_order = -1;
+		/* Keep the validated order if the failed verification left a
+		 * committed block behind (block #2's commit failed, then block
+		 * #1's demolition resisted): CMA_PB_NR over cma_blocks[] must
+		 * stay meaningful for cma_usage, the write-0 demolition and
+		 * the exit restore - and cma_pool_cma_2mb's "leftover blocks
+		 * keep counting" contract depends on it. order -1 here would
+		 * make each of those a 1UL << -1. */
+		if (!cma_blocks_n)
+			cma_pb_order = -1;
 		if (pool_want_with_cma)
 			pr_warn("cma: verification failed (%d), pool_want_with_cma=%d falls back to v9\n",
 				ret, pool_want_with_cma);
@@ -2523,6 +2531,13 @@ static int acquire_set(const char *val, const struct kernel_param *kp)
 		atomic_set(&acquire_running, 0);
 		return 0;
 	}
+	/* Not before init has built the pool, and - the load-bearing half - not
+	 * once exit has begun: exit cancels acquire_work BEFORE demolishing the
+	 * reservoir, and a start slipping in after that cancel would run the
+	 * worker against a torn-down module (and re-commit CMA blocks nothing
+	 * will ever restore). */
+	if (!READ_ONCE(pool_ready))
+		return -ENODEV;
 	/* Required-symbol checklists (option 1): a mode whose required set is
 	 * incomplete is refused here rather than half-run. id=3 requires B on top of
 	 * the sweep - without it id=3 would just be id=2, so point the user at id=2. */

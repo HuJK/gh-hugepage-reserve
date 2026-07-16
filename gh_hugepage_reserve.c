@@ -571,12 +571,19 @@ static void __exit hugepage_reserve_exit(void)
 	WRITE_ONCE(pool_ready, false);
 
 	/*
-	 * Signal any in-flight acquire loop to stop before waiting for it: both
-	 * acquire workers re-check acquire_running every iteration, so this bounds
-	 * the cancel_work_sync wait to the current window instead of a whole
-	 * zone sweep (v2 has no fail-score give-up).
+	 * Signal any in-flight acquire loop to stop, then wait for the worker
+	 * HERE - before the reservoir demolition below. The worker's tail
+	 * (cma_limbo_exchange / cma_limbo_process) does not check
+	 * acquire_running and would otherwise commit fresh CMA blocks AFTER
+	 * the demolition - pageblocks left CMA-labeled forever, silently,
+	 * once the module is gone. acquire_work is queued only by the acquire
+	 * sysfs (never by a probe), and acquire_set refuses to start once
+	 * pool_ready is cleared, so nothing re-queues it behind this cancel.
+	 * acquire_running=0 first bounds the wait to the current window
+	 * instead of a whole zone sweep (v2 has no fail-score give-up).
 	 */
 	atomic_set(&acquire_running, 0);
+	cancel_work_sync(&acquire_work);
 
 	/*
 	 * moveable_to_cma: detach the gfp adjust hook before teardown so no bypass
@@ -611,14 +618,6 @@ static void __exit hugepage_reserve_exit(void)
 		       cma_blocks_n);
 	mutex_unlock(&cma_mutex);
 
-	/* v10: free the limbo strays (held order-9 compounds). */
-	{
-		struct page *lp;
-
-		while ((lp = limbo_del_idx(0)))
-			__free_pages(lp, PAGE_ORDER);
-	}
-
 	/*
 	 * Remove all probes FIRST, cancel works second. The create/destroy
 	 * kprobes queue works (refill, owner sweep, pcp drain), so cancelling
@@ -642,12 +641,26 @@ static void __exit hugepage_reserve_exit(void)
 		unregister_kprobe(&vm_destroy_kp);
 
 	/*
+	 * v10: free the limbo strays (held order-9 compounds) - only now that
+	 * the free hook is detached: pool_take_frozen_exchange (atomic) parks
+	 * VM-returned pages into limbo, so a teardown free arriving after an
+	 * earlier drain would strand its page there and leak it (up to
+	 * LIMBO_MAX x 2MB per unload).
+	 */
+	{
+		struct page *lp;
+
+		while ((lp = limbo_del_idx(0)))
+			__free_pages(lp, PAGE_ORDER);
+	}
+
+	/*
 	 * Cancel works in dependency order: refill_worker's tail schedules
 	 * vm_owner_sweep_work, so the sweep must be cancelled AFTER refill has
 	 * been flushed - cancelling it first lets an in-flight refill re-arm
 	 * it behind its own cancel, with the same use-after-free result.
+	 * (acquire_work was already cancelled up top, before the demolition.)
 	 */
-	cancel_work_sync(&acquire_work);
 	cancel_delayed_work_sync(&refill_work);
 	cancel_delayed_work_sync(&pcp_drain_work);
 	cancel_work_sync(&vm_owner_sweep_work);
