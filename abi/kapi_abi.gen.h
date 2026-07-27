@@ -14,9 +14,16 @@
 	X(lru_add_drain_all) \
 	X(drop_slab) \
 	X(drain_all_pages) \
+	X(set_pageblock_migratetype) \
+	X(get_pfnblock_flags_mask) \
 	X(mem_cgroup_from_task) \
 	X(try_to_free_mem_cgroup_pages) \
-	X(android_vh_free_one_page_bypass)
+	X(android_vh_free_one_page_bypass) \
+	X(static_key_enable) \
+	X(static_key_disable) \
+	X(kallsyms_lookup_name) \
+	X(android_vh_alloc_flags_cma_adjust) \
+	X(android_vh_calc_alloc_flags)
 
 #ifdef KAPI_ABI_WANT_TABLE
 /* Expected ABI signature per [since, until) version range. Types are
@@ -42,10 +49,17 @@ static const struct kapi_abi_row kapi_abi_table[] = {
 	{ "lru_add_drain_all", 0x000000u, 0xffffffffu, 0, "void", "void", "id2,id3" },
 	{ "drop_slab", 0x000000u, 0xffffffffu, 0, "void", "void", "id2,id3" },
 	{ "drain_all_pages", 0x000000u, 0xffffffffu, 0, "void", "zone*", "core" },
+	{ "set_pageblock_migratetype", 0x000000u, 0x061000u, 0, "void", "page*,int", "cma" },
+	{ "get_pfnblock_flags_mask", 0x000000u, 0x061000u, 0, "ulong", "page*,ulong,ulong", "cma" },
 	{ "mem_cgroup_from_task", 0x000000u, 0xffffffffu, 0, "mem_cgroup*", "task_struct*", "A" },
 	{ "try_to_free_mem_cgroup_pages", 0x000000u, 0x060c00u, 0, "ulong", "mem_cgroup*,ulong,uint,uint", "A" },
 	{ "try_to_free_mem_cgroup_pages", 0x060c00u, 0xffffffffu, 0, "ulong", "mem_cgroup*,ulong,uint,uint,int*", "A" },
 	{ "android_vh_free_one_page_bypass", 0x000000u, 0xffffffffu, 1, "void", "page*,zone*,int,int,int,bool*", "hook" },
+	{ "static_key_enable", 0x000000u, 0xffffffffu, 0, "void", "static_key*", "mtc" },
+	{ "static_key_disable", 0x000000u, 0xffffffffu, 0, "void", "static_key*", "mtc" },
+	{ "kallsyms_lookup_name", 0x000000u, 0xffffffffu, 0, "ulong", "char*", "mtc" },
+	{ "android_vh_alloc_flags_cma_adjust", 0x000000u, 0x060c00u, 1, "void", "uint,uint*", "mtc" },
+	{ "android_vh_calc_alloc_flags", 0x060c00u, 0xffffffffu, 1, "void", "uint,uint*,bool*", "mtc" },
 };
 #define KAPI_ABI_NROWS ((int)(sizeof(kapi_abi_table) / sizeof(kapi_abi_table[0])))
 #endif /* KAPI_ABI_WANT_TABLE */

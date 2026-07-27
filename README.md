@@ -200,6 +200,61 @@ target).
 
 ---
 
+## 4. CMA reservoir (v10/v11, experimental) - give idle reserve back to apps
+
+With `pool_want_with_cma > pool_want`, the difference is kept as a **CMA
+reservoir**: whole pageblocks the module labels `MIGRATE_CMA` and leaves *free
+in buddy*. While no VM needs them, app (movable) allocations use that memory
+like any other - it is not "held" at all. But unmovable allocations can never
+enter a CMA block, so the blocks stay assemblable: before a VM starts, a
+targeted CMA-mode `alloc_contig_range` migrates the movable squatters out and
+rebuilds 2 MB pages in seconds, instead of fighting the fragmentation wall
+(measured: ~10 s for 8 GB via the reservoir vs. a sweep stalling at ~30%).
+
+`pool_want_with_cma=0` (default) disables all of it - v9 behavior exactly.
+The feature needs two preflight values the packaging scripts pass at insmod
+(`migrate_cma_val` from BTF, `pageblock_order_val` from `/proc/pagetypeinfo`),
+resolves the pageblock setter/reader from kallsyms, and self-verifies on the
+first block before labeling anything (order + accounting + grab-back checks);
+any missing piece quietly falls back to the v9 path. Available on 6.1-6.12;
+from 6.16 the kernel's migratetype rework removes the interfaces and the
+feature auto-disables. A `cma_reservoir_floor_mb` headroom floor (default
+1024 MB) refuses flips that would starve the kernel's unmovable budget.
+
+Writing `pool_want` above `pool_want_with_cma` pulls the total target along, so
+a legacy management app that only knows `pool_want` still drives the whole
+elastic loop. Writing `pool_want_with_cma` smaller demolishes the excess
+reservoir immediately (emptiest blocks first); writing `0` demolishes all of
+it. `rmmod` restores every block to `MOVABLE` before the pool is freed.
+
+**Consuming the reservoir (v11).** The claim above - "app movable allocations
+use that memory like any other" - only holds when the kernel actually routes
+plain movable allocations into CMA. A stock `restrict_cma_redirect=true` kernel
+does not: only `__GFP_CMA`-tagged allocations (small anon faults, swap-in) reach
+the CMA freelist, while the app's real working set - page cache and mTHP anon -
+carries no `__GFP_CMA` and never touches the reservoir, leaving it idle. Two
+`moveable_to_cma_*` levers open that path; both are off by default, gated behind
+the CMA feature, and inert when the vendor already opens it:
+
+- `moveable_to_cma_gfp_cma_hook` (surgical, preferred): a vendor-hook probe that
+  ORs `ALLOC_CMA` into plain movable requests, self-limited to *reservoir full*
+  plus a `cma_bypass_floor_mb` free-CMA floor (default 256 MB) so it can neither
+  race acquire nor drain CMA to exhaustion. Located by name
+  (`android_vh_alloc_flags_cma_adjust` on 6.1/6.6, `android_vh_calc_alloc_flags`
+  on 6.12) - only *our* reservoir's intake widens, vendor CMA balancing is left
+  alone.
+- `moveable_to_cma_restrict_cma_redirect_disabled` (global): flips the kernel's
+  `restrict_cma_redirect` static key off, making *all* movable eligible for
+  *all* CMA (vendor carveouts included) - heavier, process-context only, and it
+  drains pcp after the flip for the 6.6/6.12 `cma_has_pcplist` overload. Value is
+  the outcome: `1` = redirect on (movable can migrate in), `0` = blocked.
+
+`moveable_to_cma_vender_already_allowed` (RO) reports `1` when the vendor kernel
+already redirects movable -> CMA (`restrict_cma_redirect` resolved and false); a
+lever write is then a no-op and the disabled-lever read still shows `1`.
+
+---
+
 ## Parameter reference
 
 All under `/sys/module/gh_hugepage_reserve/parameters/`.
@@ -216,6 +271,17 @@ All under `/sys/module/gh_hugepage_reserve/parameters/`.
 | `acquire`              | 0200 | acquire | `0` stop / `1` old / `2` sweep+A / `3` sweep+B      |
 | `acquire_drop_slab`    | 0600 | acquire | Drop reclaimable slab at sweep start (default 1)    |
 | `acquire_mem_floor_mb` | 0600 | acquire | Sweep stops below this `MemAvailable` (default 512) |
+| `pool_want_with_cma`   | 0600 | cma     | Total target incl. reservoir (pages); `0` = off     |
+| `cma_reservoir_floor_mb` | 0600 | cma   | Refuse flips below this non-CMA available (MB)      |
+| `moveable_to_cma_gfp_cma_hook` | 0600 | cma | Arm `__GFP_CMA` bypass so page cache / mTHP anon consume the reservoir |
+| `cma_bypass_floor_mb`  | 0600 | cma     | Bypass hook stops granting CMA below this free-CMA (MB, default 256) |
+| `moveable_to_cma_restrict_cma_redirect_disabled` | 0600 | cma | Global movable→CMA: `1` = on, `0` = blocked (flips restrict key) |
+| `moveable_to_cma_vender_already_allowed` | 0400 | cma | RO: `1` = vendor kernel already redirects movable→CMA |
+| `migrate_cma_val`      | 0400 | cma     | `MIGRATE_CMA` value from preflight; `-1` = off      |
+| `pageblock_order_val`  | 0400 | cma     | Pageblock order from preflight; `-1` = off          |
+| `pool_cma`             | 0400 | cma     | Reservoir size (2 MB-page equivalents), read-only   |
+| `pool_avail_cma_able`  | 0400 | cma     | Avail pages flippable as whole pageblocks           |
+| `cma_usage`            | 0400 | cma     | Reservoir occupancy snapshot (free/anon/file, ~1s)  |
 | `pool_avail`           | 0400 | info    | Pages currently in the pool                         |
 | `refill_stat`          | 0400 | info    | Full status + counters                              |
 | `served_summary`       | 0400 | info    | Reconciled served-page summary                      |
@@ -225,7 +291,20 @@ All under `/sys/module/gh_hugepage_reserve/parameters/`.
 
 `refill_stat` reports one `key=value` per line: `state`, `pool_avail`,
 `pool_total`, `served`, `pool_want`, `total_served`, `total_refilled`,
-`active_vms`, `acquire_active`, `refill_enable`, `free_reclaim`.
+`active_vms`, `acquire_active`, `refill_enable`, `free_reclaim`,
+`pool_want_with_cma`, `pool_cma`, `pool_avail_cma_able`, `cma_pb_order`.
+`cma_pb_order=-1` means the whole CMA side is off for this boot (missing
+symbols/preflight values, or the boot-time first-block verification failed).
+
+The app-side consumability probe is `tools/balloon.c` (static aarch64 CLI,
+shipped in the package): a pure pressure instrument - it anon-balloons until
+`MemAvailable < floor_mb` (argv), prints `cma_before_kb/cma_after_kb/
+cma_diff_kb/held_mb/stop_reason` and exits. The app writes `pool_want=0`
+first, runs it, judges the numbers itself, and records its verdict as
+`cma_probe_result=` in `settings.prop` - app-owned state the kernel module
+never sees.
+`reclaim_debug` gained `cma_leak` - a tripwire counting CMA-labeled pages that
+tried to enter the pool; it must stay 0.
 
 ---
 
