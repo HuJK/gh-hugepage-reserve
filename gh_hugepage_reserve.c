@@ -397,57 +397,20 @@ static int __init hugepage_reserve_init(void)
 		pool_size_max = (int)(pool_size_max_ram >> (PAGE_SHIFT + PAGE_ORDER));
 	}
 
-	/* Low-memory auto-tuning: reduce default pool_want for small-RAM devices.
-	 * Temp-root phones typically have 1-50 MB available for the pool. */
-	if (pool_want < 0) {
-		unsigned long ram_mb = totalram_pages() >> (20 - PAGE_SHIFT);
-		if (ram_mb < 4096)
-			pool_want = 16;		/* 32 MB for <4 GB RAM */
-		else if (ram_mb < 6144)
-			pool_want = 64;		/* 128 MB for <6 GB RAM */
-		else if (ram_mb < 8192)
-			pool_want = 256;	/* 512 MB for <8 GB RAM */
-		else
-			pool_want = 1024;	/* 2 GB default */
-	}
-
-	/* Memory-pressure aware: clamp pool_want to what the system can actually
-	 * spare right now, leaving mem_avail_min_mb as headroom. */
-	{
-		long avail = si_mem_available();
-		long headroom = (long)mem_avail_min_mb << (20 - PAGE_SHIFT);
-		long pool_pages_max = (avail - headroom) >> PAGE_ORDER;
-		if (pool_pages_max < 0)
-			pool_pages_max = 0;
-		if (pool_want > (int)pool_pages_max) {
-			pr_warn("mem_avail=%ld MB, clamping pool_want %d -> %ld
-",
-				avail >> (20 - PAGE_SHIFT), pool_want, pool_pages_max);
-			pool_want = (int)pool_pages_max;
-		}
-	}
-
+	if (pool_want < 0)
+		pool_want = 1024;
 	if (pool_want > pool_size_max)
 		pool_want = pool_size_max;
 
-	/* Auto-enable CMA reservoir for low-memory / temp-root scenarios.
-	 * When the held pool is tiny (e.g. 1-50 MB), CMA pageblocks provide
-	 * an elastic reservoir: free for apps when idle, reassembled for VMs.
-	 * The floor auto-tunes: lower on small RAM to allow more CMA usage. */
-	if (pool_prefer_cma && pool_want < 128 && cma_capable) {
-		if (pool_want_with_cma < pool_size_max / 2)
-			pool_want_with_cma = pool_size_max / 2;
-		pr_info("low-mem auto CMA: reservoir target=%d
-", pool_want_with_cma);
-	}
+	/* Auto-tune CMA floor for smaller RAM devices to permit larger reservoirs. */
 	{
 		unsigned long ram_mb = totalram_pages() >> (20 - PAGE_SHIFT);
-		if (ram_mb < 4096 && cma_reservoir_floor_mb > 128)
-			cma_reservoir_floor_mb = 128;
-		else if (ram_mb < 6144 && cma_reservoir_floor_mb > 256)
-			cma_reservoir_floor_mb = 256;
-		else if (ram_mb < 8192 && cma_reservoir_floor_mb > 512)
-			cma_reservoir_floor_mb = 512;
+		if (pool_prefer_cma && cma_capable) {
+			if (ram_mb < 6144 && cma_reservoir_floor_mb > 256)
+				cma_reservoir_floor_mb = 256;
+			else if (ram_mb < 8192 && cma_reservoir_floor_mb > 512)
+				cma_reservoir_floor_mb = 512;
+		}
 	}
 
 	if (refill_delay_ms < 1000)
@@ -487,28 +450,66 @@ static int __init hugepage_reserve_init(void)
 	kretp.entry_handler = entry_handler;
 	kretp.data_size     = 0;
 	kretp.maxactive     = 20;
+	/*
+	 * Aggressive prefill: before allocating, free reclaimable slab and
+	 * drain per-CPU page lists so buddy sees the cleanest possible picture.
+	 * This is critical on temp-root phones where memory is already
+	 * fragmented: a single slab/dentry page can poison a 2 MB window.
+	 * alloc_pages(__GFP_RETRY_MAYFAIL) already triggers compaction
+	 * internally; we amplify its effect by giving it slab-free windows.
+	 */
+	if (kapi.k_drop_slab) {
+		kapi.k_drop_slab();
+		pr_info("prefill: dropped slab caches\n");
+	}
+	lru_add_drain_all();
+	if (kapi.k_drain_all_pages)
+		kapi.k_drain_all_pages(NULL);	/* drain every zone's PCP */
 
-	/* Pre-allocate order-9 compound pages toward the target (give up per-page
-	 * when even compaction/reclaim can't produce one; never OOM-kills). */
-	for (i = 0; i < pool_want; i++) {
-		page_pool[i] = alloc_pages(GFP_KERNEL | __GFP_COMP |
-					   __GFP_NOWARN | __GFP_RETRY_MAYFAIL,
-					   PAGE_ORDER);
-		if (!page_pool[i]) {
-			pr_info("stopped at %d/%d\n",
-				i, pool_want);
-			break;
-		}
-		if ((i + 1) % 50 == 0) {
-			cond_resched();
-			if ((i + 1) % 100 == 0)
-				pr_info("allocated %d/%d ...\n",
-					i + 1, pool_want);
+	/* Pre-allocate order-9 compound pages toward the target.  On first
+	 * failure, escalate: drop slab again (freed slab pages create new
+	 * contiguous windows for the buddy allocator), drain PCP, then retry
+	 * the remaining pages.  Give up only when both passes fail for the
+	 * same page (truly out of contiguous 2 MB windows from buddy). */
+	{
+		int pass;
+
+		for (pass = 0; pass < 2 && i < pool_want; pass++) {
+			int started = i;
+
+			for (; i < pool_want; i++) {
+				page_pool[i] = alloc_pages(GFP_KERNEL | __GFP_COMP |
+						       __GFP_NOWARN | __GFP_RETRY_MAYFAIL,
+						       PAGE_ORDER);
+				if (!page_pool[i])
+					break;
+				if ((i + 1) % 50 == 0) {
+					cond_resched();
+					if ((i + 1) % 100 == 0)
+						pr_info("allocated %d/%d ...\n",
+							i + 1, pool_want);
+				}
+			}
+
+			if (i >= pool_want)
+				break;	/* done */
+
+			if (pass == 0) {
+				int got = i - started;
+
+				pr_warn("prefill pass %d: got %d, stalled at %d/%d; freeing slab & retrying...\n",
+					pass + 1, got, i, pool_want);
+				if (kapi.k_drop_slab)
+					kapi.k_drop_slab();
+				lru_add_drain_all();
+				if (kapi.k_drain_all_pages)
+					kapi.k_drain_all_pages(NULL);
+				msleep(200);	/* let reclaim/compaction settle */
+			}
 		}
 	}
 
 	pool_total = i;			/* capacity = what we actually got */
-	/* pool_want stays = the requested target (may exceed capacity) */
 	atomic_set(&pool_count, pool_total);
 	for (i = 0; i < pool_total; i++)	/* v10: index the prefill */
 		pb_track(page_to_pfn(page_pool[i]), PB_AVAIL, 0);
@@ -516,14 +517,17 @@ static int __init hugepage_reserve_init(void)
 	/*
 	 * An empty pool is a valid load state (boot-time memory too fragmented,
 	 * or pool_want=0 soft-disable): the hooks stay armed but idle while
-	 * pool_count is 0, and capacity grows later via acquire (or a pool_want
-	 * write followed by acquire).
+	 * pool_count is 0, and capacity grows later via acquire.
 	 */
 	if (pool_total == 0 && pool_want > 0)
 		pr_warn("started empty; grow via acquire toward target %d\n",
 			pool_want);
+	else if (pool_total < pool_want / 2)
+		pr_warn("pool under half target (%d/%d MB); use 'echo 3 > .../acquire' to top up\n",
+			pool_total * 2, pool_want * 2);
 
 	pr_info("pool ready: %d x 2MB = %d MB (target %d)\n",
+		pool_total, pool_total * 2, pool_want);
 		pool_total, pool_total * 2, pool_want);
 
 	/* Cache the zone the smart acquire (id=2) sweeps. */
@@ -533,6 +537,29 @@ static int __init hugepage_reserve_init(void)
 
 	/* From here, pool_want writes resize live instead of just recording. */
 	WRITE_ONCE(pool_ready, true);
+
+	/*
+	 * Auto-acquire: if the prefill got less than half the target and the
+	 * aggressive acquire symbols are available, fire a one-shot acquire=3
+	 * (sweep + per-block evict) in the background. The VM hooks are armed
+	 * immediately - the acquire runs async and tops up the pool while the
+	 * module is already serving. Skip if acquire is already running or if
+	 * pool_total is already at target.
+	 */
+	if (pool_total < pool_want && pool_total < pool_want / 2 + 1 &&
+	    atomic_cmpxchg(&acquire_running, 0, 1) == 0) {
+		if (kapi.k_alloc_contig_range && kapi.k_folio_isolate_lru &&
+		    kapi.k_reclaim_pages && kapi.k_drop_slab) {
+			pr_info("pool below half target (%d/%d MB), starting background acquire=3...\n",
+				pool_total * 2, pool_want * 2);
+			WRITE_ONCE(acquire_mode, 3);
+			WRITE_ONCE(acquire_stop_reason, "acquiring");
+			schedule_work(&acquire_work);
+		} else {
+			atomic_set(&acquire_running, 0);
+			pr_info("acquire=3 symbols unavailable; use 'echo 1 > .../acquire' for base acquire\n");
+		}
+	}
 
 	/*
 	 * Register kretprobe at init - must be active before any VM ioctl.
