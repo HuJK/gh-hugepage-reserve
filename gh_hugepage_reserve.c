@@ -389,10 +389,11 @@ static int __init hugepage_reserve_init(void)
 	{
 		unsigned long ram = totalram_pages() << PAGE_SHIFT;	/* bytes */
 		unsigned long reserve = (unsigned long)system_reserve_mb << 20;
+		unsigned long keep, pool_size_max_ram;
 		if (reserve < (unsigned long)SYSTEM_RESERVE_MIN_MB << 20)
 			reserve = (unsigned long)SYSTEM_RESERVE_MIN_MB << 20;
-		unsigned long keep = min(ram / 2, reserve);
-		unsigned long pool_size_max_ram = min(ram - keep, POOL_SIZE_MAX_RAM);
+		keep = min(ram / 2, reserve);
+		pool_size_max_ram = min(ram - keep, POOL_SIZE_MAX_RAM);
 
 		pool_size_max = (int)(pool_size_max_ram >> (PAGE_SHIFT + PAGE_ORDER));
 	}
@@ -404,7 +405,8 @@ static int __init hugepage_reserve_init(void)
 
 	/* Auto-tune CMA floor for smaller RAM devices to permit larger reservoirs. */
 	{
-		unsigned long ram_mb = totalram_pages() >> (20 - PAGE_SHIFT);
+		unsigned long ram_mb;
+		ram_mb = totalram_pages() >> (20 - PAGE_SHIFT);
 		if (pool_prefer_cma && cma_capable) {
 			if (ram_mb < 6144 && cma_reservoir_floor_mb > 256)
 				cma_reservoir_floor_mb = 256;
@@ -472,10 +474,10 @@ static int __init hugepage_reserve_init(void)
 	 * contiguous windows for the buddy allocator), drain PCP, then retry
 	 * the remaining pages.  Give up only when both passes fail for the
 	 * same page (truly out of contiguous 2 MB windows from buddy). */
-	i = 0;
 	{
 		int pass;
 
+		i = 0;
 		for (pass = 0; pass < 2 && i < pool_want; pass++) {
 			int started = i;
 
@@ -497,7 +499,8 @@ static int __init hugepage_reserve_init(void)
 				break;	/* done */
 
 			if (pass == 0) {
-				int got = i - started;
+				int got;
+				got = i - started;
 
 				pr_warn("prefill pass %d: got %d, stalled at %d/%d; freeing slab & retrying...\n",
 					pass + 1, got, i, pool_want);
