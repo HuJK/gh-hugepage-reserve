@@ -531,7 +531,6 @@ static int __init hugepage_reserve_init(void)
 
 	pr_info("pool ready: %d x 2MB = %d MB (target %d)\n",
 		pool_total, pool_total * 2, pool_want);
-		pool_total, pool_total * 2, pool_want);
 
 	/* Cache the zone the smart acquire (id=2) sweeps. */
 	acq_zone = acq_resolve_zone();
