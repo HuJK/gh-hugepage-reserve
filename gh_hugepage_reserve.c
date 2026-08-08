@@ -462,7 +462,8 @@ static int __init hugepage_reserve_init(void)
 		kapi.k_drop_slab();
 		pr_info("prefill: dropped slab caches\n");
 	}
-	lru_add_drain_all();
+	if (kapi.k_lru_add_drain_all)
+		kapi.k_lru_add_drain_all();
 	if (kapi.k_drain_all_pages)
 		kapi.k_drain_all_pages(NULL);	/* drain every zone's PCP */
 
@@ -471,6 +472,7 @@ static int __init hugepage_reserve_init(void)
 	 * contiguous windows for the buddy allocator), drain PCP, then retry
 	 * the remaining pages.  Give up only when both passes fail for the
 	 * same page (truly out of contiguous 2 MB windows from buddy). */
+	i = 0;
 	{
 		int pass;
 
@@ -501,7 +503,8 @@ static int __init hugepage_reserve_init(void)
 					pass + 1, got, i, pool_want);
 				if (kapi.k_drop_slab)
 					kapi.k_drop_slab();
-				lru_add_drain_all();
+				if (kapi.k_lru_add_drain_all)
+					kapi.k_lru_add_drain_all();
 				if (kapi.k_drain_all_pages)
 					kapi.k_drain_all_pages(NULL);
 				msleep(200);	/* let reclaim/compaction settle */
