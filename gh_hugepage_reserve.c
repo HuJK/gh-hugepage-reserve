@@ -84,15 +84,12 @@
 					/* the same cap in 2MB pages (12288). The
 					 * effective cap is pool_size_max, computed
 					 * from system RAM at insmod:
-					 * min(ram - min(ram/2, SYSTEM_RESERVE),
+					 * min(ram - min(ram/2, system_reserve_mb),
 					 *     POOL_SIZE_MAX_RAM). */
-#define SYSTEM_RESERVE		(6UL << 30)	/* RAM never counted into pool_size_max:
-						 * the pool leaves at least this much
-						 * (or half of RAM, whichever is less)
-						 * to the rest of the system. 6G fits
-						 * a heavy Android resident set:
-						 * ~2-3G unswappable kernel+dmabuf/GPU
-						 * plus ~2.7G core services. */
+#define SYSTEM_RESERVE_DEFAULT_MB 6144
+#define SYSTEM_RESERVE_MIN_MB     64
+/* system_reserve_mb: overridable at insmod for low-memory / temp-root phones.
+ * Default 6144 MB (6 GB) for heavy Android; set e.g. 256 for 1-50 MB pool systems. */
 #define ACQUIRE_MAX_FAILS	8	/* stop once the cumulative fail score reaches
 					 * this (a failure +1, a success -3, floored
 					 * at 0) */
@@ -119,6 +116,22 @@
 #define GH_CREATE_VM	_IO(GH_IOCTL_TYPE, 0x0)
 
 /* ---- Module parameters ---- */
+
+/* system_reserve_mb: RAM (MB) never counted into pool_size_max.
+ * The pool leaves at least this much (or half of RAM, whichever is less)
+ * to the rest of the system. Default 6144 (6 GB). For temp-root / low-memory
+ * phones set lower: 256 MB leaves about 400 MB for pool on an 8 GB device. */
+static unsigned int system_reserve_mb = SYSTEM_RESERVE_DEFAULT_MB;
+module_param(system_reserve_mb, uint, 0600);
+MODULE_PARM_DESC(system_reserve_mb,
+	"RAM (MB) reserved for system (default 6144, min 64)");
+
+/* mem_avail_min_mb: hard floor (MB) below which pool operations stop.
+ * Different from acquire_mem_floor_mb: this guards init/prefill too. */
+static unsigned int mem_avail_min_mb = 128;
+module_param(mem_avail_min_mb, uint, 0600);
+MODULE_PARM_DESC(mem_avail_min_mb,
+	"Hard memory floor (MB) - pool stops when si_mem_available drops below this (default 128)");
 
 /* pool_want is the single target knob (declared below): set at insmod and at
  * runtime via the same sysfs file. */
@@ -233,6 +246,15 @@ static int pool_total;	/* current CAPACITY: pages we actually hold (avail +
 static int pool_want = 1024;	/* the single TARGET knob: set at insmod and at
 				 * runtime via the pool_want sysfs. init allocates
 				 * toward it; acquire raises capacity toward it. */
+/* pool_prefer_cma: when enabled (1), the module auto-sets pool_want_with_cma
+ * on low-memory systems so CMA-labeled pageblocks can serve as an elastic
+ * reservoir. This is ideal for temp-root phones where the held pool is tiny:
+ * CMA blocks stay available for apps, then get reassembled for VMs on demand. */
+static int pool_prefer_cma;
+module_param(pool_prefer_cma, int, 0600);
+MODULE_PARM_DESC(pool_prefer_cma,
+	"Auto-enable CMA reservoir for low-memory: 0=off, 1=on when pool_want<128 (default 0)");
+
 static int pool_want_with_cma;	/* v10 TOTAL guardianship target in 2MB pages:
 				 * held pool (pool_want of it) + CMA reservoir
 				 * (the rest). 0 (default) = reservoir feature
@@ -358,24 +380,75 @@ static int __init hugepage_reserve_init(void)
 	int i, ret;
 
 	/*
-	 * Effective cap: keep min(ram/2, SYSTEM_RESERVE) away from the pool -
-	 * half the RAM on small systems, SYSTEM_RESERVE on big ones - and offer
+	 * Effective cap: keep min(ram/2, system_reserve_mb) away from the pool -
+	 * half the RAM on small systems, system_reserve_mb on big ones - and offer
 	 * the rest, up to the POOL_SIZE_MAX_RAM array bound. Computed before any
 	 * pool_want clamp below and before pool_ready, so every later write site
 	 * sees the final value.
 	 */
 	{
 		unsigned long ram = totalram_pages() << PAGE_SHIFT;	/* bytes */
-		unsigned long keep = min(ram / 2, SYSTEM_RESERVE);
+		unsigned long reserve = (unsigned long)system_reserve_mb << 20;
+		if (reserve < (unsigned long)SYSTEM_RESERVE_MIN_MB << 20)
+			reserve = (unsigned long)SYSTEM_RESERVE_MIN_MB << 20;
+		unsigned long keep = min(ram / 2, reserve);
 		unsigned long pool_size_max_ram = min(ram - keep, POOL_SIZE_MAX_RAM);
 
 		pool_size_max = (int)(pool_size_max_ram >> (PAGE_SHIFT + PAGE_ORDER));
 	}
 
-	if (pool_want < 0)
-		pool_want = 1024;
+	/* Low-memory auto-tuning: reduce default pool_want for small-RAM devices.
+	 * Temp-root phones typically have 1-50 MB available for the pool. */
+	if (pool_want < 0) {
+		unsigned long ram_mb = totalram_pages() >> (20 - PAGE_SHIFT);
+		if (ram_mb < 4096)
+			pool_want = 16;		/* 32 MB for <4 GB RAM */
+		else if (ram_mb < 6144)
+			pool_want = 64;		/* 128 MB for <6 GB RAM */
+		else if (ram_mb < 8192)
+			pool_want = 256;	/* 512 MB for <8 GB RAM */
+		else
+			pool_want = 1024;	/* 2 GB default */
+	}
+
+	/* Memory-pressure aware: clamp pool_want to what the system can actually
+	 * spare right now, leaving mem_avail_min_mb as headroom. */
+	{
+		long avail = si_mem_available();
+		long headroom = (long)mem_avail_min_mb << (20 - PAGE_SHIFT);
+		long pool_pages_max = (avail - headroom) >> PAGE_ORDER;
+		if (pool_pages_max < 0)
+			pool_pages_max = 0;
+		if (pool_want > (int)pool_pages_max) {
+			pr_warn("mem_avail=%ld MB, clamping pool_want %d -> %ld
+",
+				avail >> (20 - PAGE_SHIFT), pool_want, pool_pages_max);
+			pool_want = (int)pool_pages_max;
+		}
+	}
+
 	if (pool_want > pool_size_max)
 		pool_want = pool_size_max;
+
+	/* Auto-enable CMA reservoir for low-memory / temp-root scenarios.
+	 * When the held pool is tiny (e.g. 1-50 MB), CMA pageblocks provide
+	 * an elastic reservoir: free for apps when idle, reassembled for VMs.
+	 * The floor auto-tunes: lower on small RAM to allow more CMA usage. */
+	if (pool_prefer_cma && pool_want < 128 && cma_capable) {
+		if (pool_want_with_cma < pool_size_max / 2)
+			pool_want_with_cma = pool_size_max / 2;
+		pr_info("low-mem auto CMA: reservoir target=%d
+", pool_want_with_cma);
+	}
+	{
+		unsigned long ram_mb = totalram_pages() >> (20 - PAGE_SHIFT);
+		if (ram_mb < 4096 && cma_reservoir_floor_mb > 128)
+			cma_reservoir_floor_mb = 128;
+		else if (ram_mb < 6144 && cma_reservoir_floor_mb > 256)
+			cma_reservoir_floor_mb = 256;
+		else if (ram_mb < 8192 && cma_reservoir_floor_mb > 512)
+			cma_reservoir_floor_mb = 512;
+	}
 
 	if (refill_delay_ms < 1000)
 		refill_delay_ms = 1000;
