@@ -384,9 +384,10 @@ static void pool_do_resize(int newt)
 			}
 			if (ret == -EIO)
 				cma_capable = false;
-			for (j = 0; j < got; j++)	/* over budget/floor: buddy */
+			for (j = 0; j < got; j++) {	/* over budget/floor: buddy */
 				gh_page_unreserve(subs[j]);
 				__free_pages(subs[j], PAGE_ORDER);
+			}
 			cond_resched();
 		}
 		mutex_unlock(&cma_mutex);

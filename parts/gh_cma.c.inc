@@ -608,9 +608,10 @@ static void cma_limbo_exchange(void)
 			if (!lp)
 				break;
 			pb_track(page_to_pfn(lp), 0, PB_LIMBO);
-			if (!pool_push(lp))
+			if (!pool_push(lp)) {
 				gh_page_unreserve(lp);
 				__free_pages(lp, PAGE_ORDER);
+			}
 		}
 		cond_resched();
 	}
@@ -693,9 +694,10 @@ static void cma_limbo_process(void)
 			if (ret) {
 				/* give members back: pool if seated, else free */
 				for (j = 0; j < got; j++)
-					if (!pool_push(subs[j]))
+					if (!pool_push(subs[j])) {
 						gh_page_unreserve(subs[j]);
 						__free_pages(subs[j], PAGE_ORDER);
+					}
 				if (ret == -EIO) {
 					cma_capable = false;
 					return;
@@ -711,9 +713,10 @@ static void cma_limbo_process(void)
 			if (!p)
 				continue;
 			pb_track(page_to_pfn(p), 0, PB_LIMBO);
-			if (!pool_push_grow(p))
+			if (!pool_push_grow(p)) {
 				gh_page_unreserve(p);
 				__free_pages(p, PAGE_ORDER);
+			}
 			continue;	/* slot i holds the swapped-in entry */
 		}
 
@@ -999,9 +1002,10 @@ static bool cma_phase_q(void)
 			if (victim) {
 				gh_page_unreserve(victim);
 				__free_pages(victim, PAGE_ORDER);
-				if (!pool_push(head))
+				if (!pool_push(head)) {
 					gh_page_unreserve(head);
 					__free_pages(head, PAGE_ORDER);
+				}
 				progress = true;
 			} else if (!pool_push_grow(head)) {
 				gh_page_unreserve(head);
