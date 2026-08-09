@@ -98,6 +98,7 @@ static bool pool_take_frozen(struct page *page)
 		atomic_set(&pool_count, idx + 1);
 		if (idx + 1 > pool_total)
 			WRITE_ONCE(pool_total, idx + 1);
+		gh_page_reserve(page);
 	}
 	raw_spin_unlock_irqrestore(&pool_lock, flags);
 	if (ok)
@@ -143,6 +144,7 @@ static bool pool_take_frozen_exchange(struct page *page)
 		atomic_set(&pool_count, idx + 1);
 		if (idx + 1 > pool_total)
 			WRITE_ONCE(pool_total, idx + 1);
+		gh_page_reserve(page);
 		ok = true;
 		goto unlock;
 	}

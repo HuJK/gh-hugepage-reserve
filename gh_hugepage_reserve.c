@@ -115,6 +115,23 @@
 #define GH_IOCTL_TYPE	'G'
 #define GH_CREATE_VM	_IO(GH_IOCTL_TYPE, 0x0)
 
+/*
+ * Pool page reservation: pool pages must be invisible to reclaim, migration,
+ * and compaction.  On Qualcomm GKI, vendor hooks (android_vh_calc_alloc_flags)
+ * can silently add __GFP_MOVABLE / __GFP_CMA to GFP_KERNEL, putting pool pages
+ * in movable pageblocks where apps consume them under memory pressure.
+ * SetPageReserved pins them in place; ClearPageReserved before __free_pages.
+ */
+static inline void gh_page_reserve(struct page *page)
+{
+	SetPageReserved(page);
+}
+
+static inline void gh_page_unreserve(struct page *page)
+{
+	ClearPageReserved(page);
+}
+
 /* ---- Module parameters ---- */
 
 /* system_reserve_mb: RAM (MB) never counted into pool_size_max.
@@ -755,8 +772,10 @@ static void __exit hugepage_reserve_exit(void)
 	{
 		struct page *lp;
 
-		while ((lp = limbo_del_idx(0)))
+		while ((lp = limbo_del_idx(0))) {
+			gh_page_unreserve(lp);
 			__free_pages(lp, PAGE_ORDER);
+		}
 	}
 
 	/*
@@ -783,8 +802,10 @@ static void __exit hugepage_reserve_exit(void)
 
 	/* Free remaining pool pages */
 	remaining = atomic_read(&pool_count);
-	for (i = 0; i < remaining; i++)
+	for (i = 0; i < remaining; i++) {
+		gh_page_unreserve(page_pool[i]);
 		__free_pages(page_pool[i], PAGE_ORDER);
+	}
 
 	pr_info("freed %d/%d pages (served=%d, refilled=%d)\n",
 		remaining, pool_total,

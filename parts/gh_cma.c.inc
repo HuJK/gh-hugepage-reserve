@@ -327,8 +327,10 @@ static int cma_stage_in(void)
 			rebuild_order9_compound(head);
 			if (pool_push_grow(head))
 				atomic_inc(&total_refilled);
-			else	/* capacity race: let it go whole */
+			else {	/* capacity race: let it go whole */
+				gh_page_unreserve(head);
 				__free_pages(head, PAGE_ORDER);
+			}
 		}
 		staged++;
 drop:
@@ -493,8 +495,10 @@ static int cma_commit_compound_block(unsigned long base, struct page **subs)
 		pr_err("cma: group flip readback failed at pfn=%lx\n", base);
 		return -EIO;
 	}
-	for (i = 0; i < CMA_SUBBLKS; i++)
+	for (i = 0; i < CMA_SUBBLKS; i++) {
+		gh_page_unreserve(subs[i]);
 		__free_pages(subs[i], PAGE_ORDER);
+	}
 	cma_blocks[cma_blocks_n++] = base;
 	return 0;
 }
@@ -579,15 +583,19 @@ static void cma_limbo_exchange(void)
 		if (got < CMA_SUBBLKS) {
 			/* stale entry (raced a serve): give the pages back */
 			for (i = 0; i < got; i++)
-				if (!pool_push(subs[i]))
+				if (!pool_push(subs[i])) {
+					gh_page_unreserve(subs[i]);
 					__free_pages(subs[i], PAGE_ORDER);
+				}
 			continue;
 		}
 		ret = cma_commit_compound_block(key << cma_pb_order, subs);
 		if (ret) {
 			for (i = 0; i < got; i++)
-				if (!pool_push(subs[i]))
+				if (!pool_push(subs[i])) {
+					gh_page_unreserve(subs[i]);
 					__free_pages(subs[i], PAGE_ORDER);
+				}
 			if (ret == -EIO) {
 				cma_capable = false;
 				break;
@@ -601,6 +609,7 @@ static void cma_limbo_exchange(void)
 				break;
 			pb_track(page_to_pfn(lp), 0, PB_LIMBO);
 			if (!pool_push(lp))
+				gh_page_unreserve(lp);
 				__free_pages(lp, PAGE_ORDER);
 		}
 		cond_resched();
@@ -685,6 +694,7 @@ static void cma_limbo_process(void)
 				/* give members back: pool if seated, else free */
 				for (j = 0; j < got; j++)
 					if (!pool_push(subs[j]))
+						gh_page_unreserve(subs[j]);
 						__free_pages(subs[j], PAGE_ORDER);
 				if (ret == -EIO) {
 					cma_capable = false;
@@ -702,6 +712,7 @@ static void cma_limbo_process(void)
 				continue;
 			pb_track(page_to_pfn(p), 0, PB_LIMBO);
 			if (!pool_push_grow(p))
+				gh_page_unreserve(p);
 				__free_pages(p, PAGE_ORDER);
 			continue;	/* slot i holds the swapped-in entry */
 		}
@@ -712,6 +723,7 @@ static void cma_limbo_process(void)
 			if (!p)
 				continue;
 			pb_track(page_to_pfn(p), 0, PB_LIMBO);
+			gh_page_unreserve(p);
 			__free_pages(p, PAGE_ORDER);
 			continue;
 		}
@@ -759,6 +771,7 @@ static int cma_grab_missing_siblings(unsigned long any_pfn, int max_grabs)
 		head = pfn_to_page(w);
 		rebuild_order9_compound(head);
 		if (!pool_push_grow(head)) {
+			gh_page_unreserve(head);
 			__free_pages(head, PAGE_ORDER);
 			break;
 		}
@@ -984,11 +997,14 @@ static bool cma_phase_q(void)
 			vpfn = pb_find_worst_avail(pb);
 			victim = vpfn ? pool_extract_pfn(vpfn) : NULL;
 			if (victim) {
+				gh_page_unreserve(victim);
 				__free_pages(victim, PAGE_ORDER);
 				if (!pool_push(head))
+					gh_page_unreserve(head);
 					__free_pages(head, PAGE_ORDER);
 				progress = true;
 			} else if (!pool_push_grow(head)) {
+				gh_page_unreserve(head);
 				__free_pages(head, PAGE_ORDER);
 				budget = 0;	/* no seats, no victims: done */
 			} else {
@@ -1944,6 +1960,7 @@ static bool acquire_grab_free(bool strong)
 	if (!p)
 		return false;
 	if (!pool_push_grow(p)) {
+		gh_page_unreserve(p);
 		__free_pages(p, PAGE_ORDER);
 		return false;
 	}
@@ -2083,6 +2100,7 @@ static void acquire_worker_v1(void)
 		rebuild_order9_compound(p);
 
 		if (!pool_push_grow(p)) {
+			gh_page_unreserve(p);
 			__free_pages(p, PAGE_ORDER);
 			reason = "pool capacity full";
 			break;			/* pool array full */
@@ -2355,6 +2373,7 @@ static void acquire_sweep(enum acquire_assist assist)
 			head = pfn_to_page(pfn);
 			rebuild_order9_compound(head);
 			if (!pool_push_grow(head)) {
+				gh_page_unreserve(head);
 				__free_pages(head, PAGE_ORDER);
 				reason = "pool capacity full";
 				break;

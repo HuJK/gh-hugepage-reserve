@@ -356,6 +356,7 @@ static void pool_do_resize(int newt)
 				pb_track(vpfn, 0, PB_AVAIL);	/* stale bit */
 				continue;
 			}
+			gh_page_unreserve(p);
 			__free_pages(p, PAGE_ORDER);
 			cond_resched();
 		}
@@ -384,6 +385,7 @@ static void pool_do_resize(int newt)
 			if (ret == -EIO)
 				cma_capable = false;
 			for (j = 0; j < got; j++)	/* over budget/floor: buddy */
+				gh_page_unreserve(subs[j]);
 				__free_pages(subs[j], PAGE_ORDER);
 			cond_resched();
 		}
@@ -420,6 +422,7 @@ static void pool_do_resize(int newt)
 					kapi.k_set_pageblock_migratetype(pg,
 							migrate_cma_val);
 					if (cma_pb_mt(pfn) == migrate_cma_val) {
+						gh_page_unreserve(pg);
 						__free_pages(pg, PAGE_ORDER);
 						cma_blocks[cma_blocks_n++] = pfn;
 						flip_budget--;
@@ -431,6 +434,7 @@ static void pool_do_resize(int newt)
 							MIGRATE_MOVABLE);
 				}
 			}
+			gh_page_unreserve(pg);
 			__free_pages(pg, PAGE_ORDER);
 		}
 		if (n == 0)
