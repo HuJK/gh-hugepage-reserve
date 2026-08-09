@@ -223,6 +223,9 @@ static int manual_refill_set(const char *val, const struct kernel_param *kp)
 		return -ENODEV;
 	}
 
+	if (!free_intercept_active)
+		served_do_reconcile();
+
 	if (atomic_read(&pool_count) + READ_ONCE(served_count) >= pool_total) {
 		pr_info("pool already full\n");
 		return 0;

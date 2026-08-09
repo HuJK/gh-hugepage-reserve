@@ -561,6 +561,16 @@ static int __init hugepage_reserve_init(void)
 	WRITE_ONCE(pool_ready, true);
 
 	/*
+	 * If the free hook is unavailable, served entries from previous module
+	 * loads or VM crashes accumulate forever.  Run a one-shot reconcile at
+	 * init to purge any ghost entries so the pool gauge is accurate.
+	 */
+	if (!free_intercept_active) {
+		pr_warn("free hook (android_vh_free_one_page_bypass) unavailable - served table may accumulate; use 'echo 1 > /sys/.../reconcile' to clean\n");
+		served_do_reconcile();
+	}
+
+	/*
 	 * Auto-acquire: if the prefill got less than half the target and the
 	 * aggressive acquire symbols are available, fire a one-shot acquire=3
 	 * (sweep + per-block evict) in the background. The VM hooks are armed
