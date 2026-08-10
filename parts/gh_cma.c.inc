@@ -2571,10 +2571,7 @@ static int acquire_set(const char *val, const struct kernel_param *kp)
 	if (v == 3 && (!kapi_can_evict_b() || !acq_zone))
 		return -ENOSYS;
 	/*
-	 * If the free hook is unavailable, served entries for dead VMs
-	 * accumulate and inflate served_count.  Purge them before checking
-	 * the target so acquire can proceed when pool_avail is actually low.
-	 */
+	/* Purge ghost served entries before target check */
 	if (v >= 3 && !free_intercept_active)
 		served_do_reconcile();
 

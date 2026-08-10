@@ -223,6 +223,7 @@ static int manual_refill_set(const char *val, const struct kernel_param *kp)
 		return -ENODEV;
 	}
 
+	/* Purge ghost served entries before pool-full check */
 	if (!free_intercept_active)
 		served_do_reconcile();
 
