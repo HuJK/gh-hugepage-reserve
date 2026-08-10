@@ -731,9 +731,10 @@ static int vm_destroy_pre_handler(struct kprobe *p, struct pt_regs *regs)
 	 * settles (the worker skips whatever its kernel can't do).
 	 * mod_delayed_work: several fds released in quick succession (one
 	 * kill = many gunyah fds) push the pass back. */
-	if (kapi.k_drain_all_pages || kapi.k_alloc_contig_range)
+	if (free_intercept_active &&
+	    (kapi.k_drain_all_pages || kapi.k_alloc_contig_range))
 		mod_delayed_work(system_wq, &pcp_drain_work,
-				 msecs_to_jiffies(free_intercept_active ? PCP_DRAIN_DELAY_MS : 0));
+				 msecs_to_jiffies(PCP_DRAIN_DELAY_MS));
 
 	pr_info("VM destruction detected (active=%d, pool=%d/%d, comm=%s)\n",
 		vm_active_total(), atomic_read(&pool_count), pool_total,
