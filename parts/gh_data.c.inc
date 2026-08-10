@@ -636,7 +636,7 @@ static void served_do_reconcile(void)
 			count = VM_OWNER_MAX;
 		live_n = 0;
 		for (i = 0; i < count; i++) {
-			if (!vm_owners[i].mm)
+			if (!vm_owners[i].mm || !vm_owners[i].vm_count)
 				continue;	/* swept slot */
 			live_tgid[live_n] = vm_owners[i].tgid;
 			strscpy(live_comm[live_n], vm_owners[i].comm, TASK_COMM_LEN);
