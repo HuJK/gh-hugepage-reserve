@@ -560,8 +560,7 @@ static int __init hugepage_reserve_init(void)
 	/* From here, pool_want writes resize live instead of just recording. */
 	WRITE_ONCE(pool_ready, true);
 
-	/*
-	/* Purge ghost served entries when free hook is absent */
+	// Purge ghost served entries when free hook is absent
 	if (!free_intercept_active) {
 		pr_warn("free hook (android_vh_free_one_page_bypass) unavailable - served table may accumulate; use 'echo 1 > /sys/.../reconcile' to clean\n");
 		served_do_reconcile();

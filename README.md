@@ -34,6 +34,24 @@ and the free-hook (`android_vh_free_one_page_bypass`) is often absent.
 | OnePlus 13 | OxygenOS 15.0.0.861 | Temp root (KernelSU) | OK |
 | Other | - | - | Untested |
 
+### Usage (temp-root phones)
+
+1. Gain temporary root, then load the module:
+   ```sh
+   insmod gh_hugepage_reserve.ko pool_want=2048
+   ```
+2. Perform a **hard reboot**, then as quickly as possible do a **soft reboot**
+   via KernelSU. Open DroidVM and check the module reserve panel — it should
+   show memory being reserved.
+3. Launch a VM and verify it starts successfully. After testing, return to the
+   reserve panel and release the VM-used pages back into the reserve pool.
+4. Test complete.
+
+> **Why hard-reboot-first?** Memory is least fragmented right after boot.
+> Loading the module and soft-rebooting via KSU preserves the reserved pages
+> while the module re-initializes with a clean served table.
+
+
 
 ### **Disclaimer - use at your own risk.** 
 

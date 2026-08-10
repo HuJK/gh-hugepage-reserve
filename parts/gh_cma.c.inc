@@ -2570,8 +2570,7 @@ static int acquire_set(const char *val, const struct kernel_param *kp)
 		return -ENOSYS;
 	if (v == 3 && (!kapi_can_evict_b() || !acq_zone))
 		return -ENOSYS;
-	/*
-	/* Purge ghost served entries before target check */
+	// Purge ghost served entries before target check
 	if (v >= 3 && !free_intercept_active)
 		served_do_reconcile();
 
