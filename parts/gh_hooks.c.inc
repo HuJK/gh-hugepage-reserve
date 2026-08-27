@@ -98,6 +98,7 @@ static bool pool_take_frozen(struct page *page)
 		atomic_set(&pool_count, idx + 1);
 		if (idx + 1 > pool_total)
 			WRITE_ONCE(pool_total, idx + 1);
+		gh_page_reserve(page);
 	}
 	raw_spin_unlock_irqrestore(&pool_lock, flags);
 	if (ok)
@@ -143,6 +144,7 @@ static bool pool_take_frozen_exchange(struct page *page)
 		atomic_set(&pool_count, idx + 1);
 		if (idx + 1 > pool_total)
 			WRITE_ONCE(pool_total, idx + 1);
+		gh_page_reserve(page);
 		ok = true;
 		goto unlock;
 	}
@@ -729,13 +731,18 @@ static int vm_destroy_pre_handler(struct kprobe *p, struct pt_regs *regs)
 	 * settles (the worker skips whatever its kernel can't do).
 	 * mod_delayed_work: several fds released in quick succession (one
 	 * kill = many gunyah fds) push the pass back. */
-	if (kapi.k_drain_all_pages || kapi.k_alloc_contig_range)
+	if (free_intercept_active &&
+	    (kapi.k_drain_all_pages || kapi.k_alloc_contig_range))
 		mod_delayed_work(system_wq, &pcp_drain_work,
 				 msecs_to_jiffies(PCP_DRAIN_DELAY_MS));
 
 	pr_info("VM destruction detected (active=%d, pool=%d/%d, comm=%s)\n",
 		vm_active_total(), atomic_read(&pool_count), pool_total,
 		current->comm);
+
+	// Reconcile ghost entries immediately when free hook absent
+	if (!free_intercept_active)
+		served_do_reconcile();
 
 	/*
 	 * Schedule refill immediately - worker polls mm_users before allocating.

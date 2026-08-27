@@ -8,6 +8,40 @@ those pages when the VM returns them.
 Ships as a loadable module (KernelSU / APatch / Magisk friendly). Supported KMIs:
 `android15-6.1` ... `android16-6.12`, including 6.6 vendor kernels (e.g. SM8750).
 
+## Fork changes (samfor12)
+
+Targeted at **temp-root phones** where the kernel cannot be modified
+and the free-hook (`android_vh_free_one_page_bypass`) is often absent.
+
+- **Served-table reconciliation**: auto-purges ghost entries from dead VMs
+  on init, acquire (mode>=3), and manual_refill. Fixes the "pool already full"
+  deadlock when `active_vms=0` but `served` entries remain.
+- **Grace-period skip**: when the free hook is unavailable, reconcile purges
+  orphan entries immediately instead of waiting 10 s for a hook that will never fire.
+- **Aggressive prefill**: two-pass allocation with `drop_slab` + PCP drain,
+  retrying with escalated compaction on failure.
+- **`SetPageReserved`**: all pool pages marked reserved to prevent the buddy
+  allocator from handing them to apps.
+- **New parameters**: `system_reserve_mb` (default 6144), `mem_avail_min_mb`
+  (default 128), `pool_prefer_cma` (0/1).
+- **Low-memory auto-scale**: `pool_want` auto-clamps based on available RAM
+  when the system is under memory pressure.
+
+### Tested
+
+| Device | OS | Root | Status |
+|--------|----|------|--------|
+| OnePlus 13 | ColorOS 15.0.0.861 | Temp root (KernelSU) | OK |
+| Other | - | - | Untested |
+
+### Usage (temp-root phones)
+
+
+1. Gain temporary root,  use ksu load the module(ZIP pack):
+2. Execute **hardware restart**, obtain temporary root, and then execute * * soft restart as soon as possible**. Open DroidVM and check the module reserve panel — it should show memory being reserved.
+3. Launch a VM and verify it starts successfully. After testing, return to the reserve panel click   release the VM-used pages back into the reserve pool，Theoretically, the Memory used by VM should be returned to the reserved pool。
+4. Test complete.
+
 ### **Disclaimer - use at your own risk.** 
 
 
@@ -267,6 +301,9 @@ All under `/sys/module/gh_hugepage_reserve/parameters/`.
 | `refill_delay_ms`      | 0600 | reclaim | Delay after VM shutdown before alloc-back refill    |
 | `manual_refill`        | 0200 | reclaim | Write `1` to trigger one alloc-back refill          |
 | `pool_want`            | 0600 | acquire | Target pool size (pages)                            |
+| `pool_prefer_cma`      | 0600 | acquire | Prefer CMA for new pool pages: 0=off, 1=on       |
+| `system_reserve_mb`     | 0600 | acquire | System RAM to leave untouched (MB, default 6144)  |
+| `mem_avail_min_mb`      | 0600 | acquire | Floor below which acquire stops (MB, default 128) |
 | `pool_size_max`        | 0400 | acquire | RAM-derived cap on `pool_want` (pages), read-only   |
 | `acquire`              | 0200 | acquire | `0` stop / `1` old / `2` sweep+A / `3` sweep+B      |
 | `acquire_drop_slab`    | 0600 | acquire | Drop reclaimable slab at sweep start (default 1)    |

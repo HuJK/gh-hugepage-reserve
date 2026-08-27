@@ -622,7 +622,7 @@ static void served_do_reconcile(void)
 	 * inside it their frees are still arriving and entries must survive so
 	 * the free hook can match them (see last_destroy_jiffies). */
 	bool  purge = time_after(jiffies, READ_ONCE(last_destroy_jiffies) +
-				 msecs_to_jiffies(RECONCILE_GRACE_MS));
+				 msecs_to_jiffies(RECONCILE_GRACE_MS)) || !free_intercept_active;
 
 	/* Physically recover hook-missed frees FIRST, so a recoverable page is
 	 * neither tallied as an orphan nor purged below once grace is over. */
@@ -636,7 +636,7 @@ static void served_do_reconcile(void)
 			count = VM_OWNER_MAX;
 		live_n = 0;
 		for (i = 0; i < count; i++) {
-			if (!vm_owners[i].mm)
+			if (!vm_owners[i].mm || !vm_owners[i].vm_count)
 				continue;	/* swept slot */
 			live_tgid[live_n] = vm_owners[i].tgid;
 			strscpy(live_comm[live_n], vm_owners[i].comm, TASK_COMM_LEN);
